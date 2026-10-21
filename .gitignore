@@ -11,6 +11,6 @@ venv/
 env/
 .env/
 
-# sSystem files ОС
+# Системные файлы ОС
 .DS_Store
 Thumbs.db
