@@ -1,4 +1,24 @@
-geopy>=2.3.0
-folium>=0.14.0
-PyQt5>=5.15.0
-PyQtWebEngine>=5.15.0
+# Python bytecode и кэш
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Временный файл карты, который создаёт приложение
+temp_map.html
+
+# Виртуальные окружения
+venv/
+env/
+.env/
+
+# sSystem files ОС
+.DS_Store
+Thumbs.db
+
+#Bash
+git init
+git add .
+git commit -m "Add interactive map GUI using PyQt5 and Folium"
+git branch -M main
+git remote add origin https://github.com/AnSk1l-orig/ORESHNIK.git
+git push -u origin main
