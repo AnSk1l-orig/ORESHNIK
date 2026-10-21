@@ -14,11 +14,3 @@ env/
 # sSystem files ОС
 .DS_Store
 Thumbs.db
-
-#Bash
-git init
-git add .
-git commit -m "Add interactive map GUI using PyQt5 and Folium"
-git branch -M main
-git remote add origin https://github.com/AnSk1l-orig/ORESHNIK.git
-git push -u origin main
