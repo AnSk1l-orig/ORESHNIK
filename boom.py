@@ -14,6 +14,48 @@ from geopy.geocoders import Nominatim
 START_LAT, START_LON = 51.1694, 71.4491  # Астана
 FLY_FRAMES = 40      # кадров в анимации перелёта
 FLY_FRAME_MS = 20    # мс между кадрами (~50 кадров/с)
+ZONE_FRAMES = 30     # кадров в анимации расширения зон
+
+# Бомбы: (название, мощность в килотоннах)
+BOMBS = [
+    ("Little Boy — Хиросима, 1945", 15),
+    ("Fat Man — Нагасаки, 1945", 21),
+    ("W76 — боеголовка Trident", 100),
+    ("W87 — боеголовка Minuteman III", 300),
+    ("W88 — боеголовка Trident II", 475),
+    ("B83 — авиабомба США", 1200),
+    ("Castle Bravo — испытание США, 1954", 15000),
+    ("Царь-бомба — испытание СССР, 1961", 50000),
+]
+
+# Зоны поражения (воздушный взрыв): радиус_км = k * мощность_кт ** p.
+# Приблизительные формулы подобия, откалиброваны по данным для Хиросимы.
+FIREBALL = "Огненный шар"
+EFFECTS = [
+    (FIREBALL, 0.068, 0.4, "#facc15", "всё внутри испаряется"),
+    ("Сильная ударная волна (20 psi)", 0.243, 1 / 3, "#b91c1c", "разрушены даже бетонные здания"),
+    ("Радиация (500 бэр)", 0.72, 0.19, "#16a34a", "смертельная доза для 50–90% людей"),
+    ("Средняя ударная волна (5 psi)", 0.693, 1 / 3, "#6b7280", "рушатся жилые дома"),
+    ("Тепловое излучение", 0.627, 0.41, "#f97316", "ожоги 3-й степени на открытом месте"),
+    ("Слабая ударная волна (1 psi)", 1.906, 1 / 3, "#60a5fa", "выбиты окна, ранения стеклом"),
+]
+
+
+def smoothstep(t):
+    """Плавный старт и плавная остановка анимации."""
+    return t * t * (3 - 2 * t)
+
+
+def circle_points(lat, lon, radius_km, n=64):
+    """Точки окружности радиусом radius_km вокруг (lat, lon)."""
+    dlat = radius_km / 111.32
+    dlon = radius_km / (111.32 * max(math.cos(math.radians(lat)), 0.01))
+    return [(lat + dlat * math.sin(2 * math.pi * i / n),
+             lon + dlon * math.cos(2 * math.pi * i / n)) for i in range(n)]
+
+
+def format_kt(kt):
+    return f"{kt / 1000:g} Мт" if kt >= 1000 else f"{kt:g} кт"
 
 
 class CityMapApp:
@@ -26,6 +68,8 @@ class CityMapApp:
         self.markers = []
         self.busy = False
         self.fly_job = None  # текущая анимация перелёта
+        self.zone_job = None  # текущая анимация зон
+        self.zone_polys = []
 
         tabs = ttk.Notebook(root)
         tabs.pack(fill="x", padx=10, pady=(10, 5))
@@ -59,6 +103,24 @@ class CityMapApp:
         self.btn_coords = ttk.Button(tab_coords, text="Показать", command=self.search_by_coords)
         self.btn_coords.pack(side="left")
 
+        # ===== Вкладка 3: бомба =====
+        tab_bomb = ttk.Frame(tabs, padding=8)
+        tabs.add(tab_bomb, text="☢️ Бомба")
+
+        ttk.Label(tab_bomb, text="Бомба:").pack(side="left")
+        self.bomb_choice = ttk.Combobox(tab_bomb, values=[name for name, _ in BOMBS],
+                                        state="readonly", width=36)
+        self.bomb_choice.current(0)
+        self.bomb_choice.pack(side="left", padx=(2, 8))
+        self.bomb_choice.bind("<<ComboboxSelected>>", self.on_bomb_selected)
+        ttk.Label(tab_bomb, text="Мощность, кт:").pack(side="left")
+        self.input_kt = ttk.Entry(tab_bomb, width=10)
+        self.input_kt.insert(0, str(BOMBS[0][1]))
+        self.input_kt.pack(side="left", padx=(2, 8))
+        self.input_kt.bind("<Return>", lambda e: self.launch())
+        ttk.Button(tab_bomb, text="🚀 Запуск", command=self.launch).pack(side="left")
+        ttk.Button(tab_bomb, text="Убрать зоны", command=self.clear_zones).pack(side="left", padx=(8, 0))
+
         # ===== Карта =====
         self.map = tkintermapview.TkinterMapView(root, corner_radius=0)
         self.map.pack(fill="both", expand=True, padx=10)
@@ -67,6 +129,8 @@ class CityMapApp:
         # Правый клик по карте — поставить метку в этой точке
         self.map.add_right_click_menu_command("Поставить метку здесь",
                                               self.marker_from_click, pass_coords=True)
+        # Легенда зон поражения поверх карты (показывается после запуска)
+        self.legend = tk.Frame(self.map, bg="white", bd=1, relief="solid")
 
         # ===== Нижняя панель =====
         bottom = ttk.Frame(root)
@@ -198,6 +262,85 @@ class CityMapApp:
         self.map.delete_all_marker()
         self.markers.clear()
         self.status.config(text="Метки очищены")
+
+    # ---------- Бомба ----------
+    def on_bomb_selected(self, _event=None):
+        self.input_kt.delete(0, "end")
+        self.input_kt.insert(0, str(BOMBS[self.bomb_choice.current()][1]))
+
+    def launch(self):
+        try:
+            kt = float(self.input_kt.get().strip().replace(",", "."))
+        except ValueError:
+            messagebox.showwarning("Ошибка", "Мощность должна быть числом (в килотоннах)!")
+            return
+        if not (0.001 <= kt <= 100000):
+            messagebox.showwarning("Ошибка", "Мощность: от 0.001 до 100 000 кт")
+            return
+
+        if self.fly_job is not None:
+            self.root.after_cancel(self.fly_job)
+            self.fly_job = None
+        # Цель — последняя метка, а если меток нет — центр карты
+        lat, lon = self.markers[-1].position if self.markers else self.map.get_position()
+        self.clear_zones()
+
+        zones = sorted(((name, k * kt ** p, color, desc) for name, k, p, color, desc in EFFECTS),
+                       key=lambda z: -z[1])  # от большой к малой, чтобы малые были сверху
+        r = zones[0][1] * 1.15
+        dlat = r / 111.32
+        dlon = r / (111.32 * max(math.cos(math.radians(lat)), 0.01))
+        self.map.fit_bounding_box((min(lat + dlat, 85), max(lon - dlon, -180)),
+                                  (max(lat - dlat, -85), min(lon + dlon, 180)))
+
+        self.flash()
+        self.show_legend(kt, zones)
+        self.status.config(text=f"Взрыв {format_kt(kt)} в точке {lat:.4f}, {lon:.4f}")
+        self.animate_zones(lat, lon, zones, 1)
+
+    def flash(self):
+        overlay = tk.Frame(self.map, bg="white")
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.root.after(120, overlay.destroy)
+
+    def animate_zones(self, lat, lon, zones, frame):
+        for poly in self.zone_polys:
+            poly.delete()
+        self.zone_polys = []
+        t = smoothstep(frame / ZONE_FRAMES)
+        for name, radius, color, _ in zones:
+            poly = self.map.set_polygon(circle_points(lat, lon, max(radius * t, 0.001)),
+                                        fill_color=color if name == FIREBALL else "",
+                                        outline_color=color, border_width=3)
+            self.zone_polys.append(poly)
+        if frame < ZONE_FRAMES:
+            self.zone_job = self.root.after(30, self.animate_zones, lat, lon, zones, frame + 1)
+        else:
+            self.zone_job = None
+
+    def show_legend(self, kt, zones):
+        for widget in self.legend.winfo_children():
+            widget.destroy()
+        tk.Label(self.legend, text=f"☢️ {format_kt(kt)}", bg="white",
+                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 2))
+        for i, (name, radius, color, desc) in enumerate(sorted(zones, key=lambda z: z[1]), start=1):
+            tk.Label(self.legend, bg=color, width=2).grid(row=i, column=0, padx=(6, 4), pady=1)
+            tk.Label(self.legend, bg="white", anchor="w",
+                     text=f"{name}: {radius:.2f} км ({math.pi * radius ** 2:.1f} км²) — {desc}"
+                     ).grid(row=i, column=1, sticky="w", padx=(0, 6))
+        tk.Label(self.legend, bg="white", fg="gray40", anchor="w",
+                 text="Приблизительная модель, воздушный взрыв").grid(
+            row=len(zones) + 1, column=0, columnspan=2, sticky="w", padx=6, pady=(2, 4))
+        self.legend.place(relx=0.01, rely=0.98, anchor="sw")
+
+    def clear_zones(self):
+        if self.zone_job is not None:
+            self.root.after_cancel(self.zone_job)
+            self.zone_job = None
+        for poly in self.zone_polys:
+            poly.delete()
+        self.zone_polys = []
+        self.legend.place_forget()
 
 
 if __name__ == "__main__":
