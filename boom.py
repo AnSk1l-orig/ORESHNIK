@@ -1,316 +1,359 @@
-<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Интерактивная карта</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <style>
-    * { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #f5f5f5; color: #222; }
-    body { display: flex; flex-direction: column; }
-    header { padding: 12px 16px; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.1); z-index: 1000; }
-    h1 { margin: 0 0 10px; font-size: 18px; }
-    .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
-    .tab { border: 0; padding: 8px 14px; border-radius: 8px; background: #eee; cursor: pointer; font-size: 14px;
-           transition: background .25s, color .25s, transform .15s; }
-    .tab:hover { background: #e0e7ff; }
-    .tab:active { transform: scale(.96); }
-    .tab.active { background: #2563eb; color: #fff; }
-    .panel { display: none; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .panel.active { display: flex; animation: fadeIn .3s ease; }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-    input { padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px; min-width: 0;
-            transition: border-color .2s, box-shadow .2s; }
-    input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.2); }
-    .pin { border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 4px #0008;
-           transition: background .4s, width .4s, height .4s; animation: drop .45s cubic-bezier(.3,1.6,.5,1); }
-    @keyframes drop { from { opacity: 0; transform: translateY(-30px) scale(.5); } to { opacity: 1; transform: none; } }
-    #city { flex: 1 1 240px; }
-    .num { width: 130px; }
-    #title { flex: 1 1 160px; }
-    button.go { padding: 8px 14px; border: 0; border-radius: 8px; background: #2563eb; color: #fff; cursor: pointer; font-size: 14px;
-                transition: background .2s, opacity .2s, transform .15s; }
-    button.go:hover { background: #1d4ed8; }
-    button.go:active { transform: scale(.96); }
-    button.go:disabled { opacity: .5; cursor: wait; }
-    button.clear { background: #6b7280; }
-    button.clear:hover { background: #4b5563; }
-    #status { margin-top: 8px; font-size: 13px; color: #555; min-height: 1em; transition: opacity .3s; }
-    select { padding: 8px 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px; background: #fff; max-width: 100%; }
-    button.launch { background: #dc2626; }
-    button.launch:hover { background: #b91c1c; }
-    #wrap { flex: 1; position: relative; }
-    #map { position: absolute; inset: 0; }
-    #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 1100;
-             transition: opacity .7s ease-out; }
-    #flash.on { opacity: .95; transition: none; }
-    #legend { position: absolute; left: 10px; bottom: 24px; z-index: 1000; background: rgba(255,255,255,.95);
-              border-radius: 10px; padding: 10px 12px; font-size: 13px; max-width: min(400px, calc(100% - 20px));
-              max-height: 60%; overflow: auto; box-shadow: 0 2px 10px rgba(0,0,0,.2);
-              opacity: 0; transform: translateY(10px); pointer-events: none; transition: opacity .4s, transform .4s; }
-    #legend.show { opacity: 1; transform: none; pointer-events: auto; }
-    #legend .row { display: flex; gap: 8px; margin-top: 6px; }
-    #legend .sw { flex: 0 0 14px; height: 14px; border-radius: 50%; margin-top: 2px; }
-    #legend .note { display: block; margin-top: 8px; color: #777; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>🗺️ Интерактивная карта: город или координаты</h1>
-    <div class="tabs">
-      <button class="tab active" data-panel="p-city">🌍 Поиск по городу</button>
-      <button class="tab" data-panel="p-coords">📍 Координаты вручную</button>
-      <button class="tab" data-panel="p-bomb">☢️ Бомба</button>
-    </div>
+"""Интерактивная карта: поиск города или точки по координатам.
 
-    <form id="p-city" class="panel active">
-      <input id="city" placeholder="Например: Москва, Алматы, Париж..." autocomplete="off">
-      <button class="go" type="submit">Найти город</button>
-    </form>
+Карта показывается прямо в окне (tkintermapview), без PyQt и браузера.
+Установка:  python -m pip install tkintermapview geopy
+"""
+import math
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
 
-    <form id="p-coords" class="panel">
-      <input id="lat" class="num" placeholder="Широта: 55.751244" inputmode="decimal">
-      <input id="lon" class="num" placeholder="Долгота: 37.618423" inputmode="decimal">
-      <input id="title" placeholder="Название метки (необязательно)">
-      <button class="go" type="submit">Показать</button>
-      <button class="go clear" type="button" id="clear">Очистить метки</button>
-    </form>
+import tkintermapview
+from geopy.geocoders import Nominatim
 
-    <form id="p-bomb" class="panel">
-      <select id="bomb"></select>
-      <input id="kt" class="num" placeholder="Мощность" inputmode="decimal">
-      <select id="unit" title="Единицы мощности">
-        <option value="1">кт</option>
-        <option value="1000">Мт</option>
-      </select>
-      <button class="go launch" type="submit">🚀 Запуск</button>
-      <button class="go clear" type="button" id="clear-zones">Убрать зоны</button>
-    </form>
+START_LAT, START_LON = 51.1694, 71.4491  # Астана
+FLY_FRAMES = 40      # кадров в анимации перелёта
+FLY_FRAME_MS = 20    # мс между кадрами (~50 кадров/с)
+ZONE_FRAMES = 30     # кадров в анимации расширения зон
 
-    <div id="status">Клик по карте — поставить метку. Бомба падает на последнюю метку (или в центр карты).</div>
-  </header>
+# Бомбы: (название, мощность в килотоннах)
+BOMBS = [
+    ("Little Boy — Хиросима, 1945", 15),
+    ("Fat Man — Нагасаки, 1945", 21),
+    ("W76 — боеголовка Trident", 100),
+    ("W87 — боеголовка Minuteman III", 300),
+    ("W88 — боеголовка Trident II", 475),
+    ("B83 — авиабомба США", 1200),
+    ("Castle Bravo — испытание США, 1954", 15000),
+    ("Царь-бомба — испытание СССР, 1961", 50000),
+]
+UNITS = {"кт": 1, "Мт": 1000}  # множитель для перевода в килотонны
 
-  <div id="wrap">
-    <div id="map"></div>
-    <div id="legend"></div>
-    <div id="flash"></div>
-  </div>
+# Зоны поражения (воздушный взрыв): радиус_км = k * мощность_кт ** p.
+# Приблизительные формулы подобия, откалиброваны по данным для Хиросимы.
+FIREBALL = "Огненный шар"
+EFFECTS = [
+    (FIREBALL, 0.068, 0.4, "#facc15", "всё внутри испаряется"),
+    ("Сильная ударная волна (20 psi)", 0.243, 1 / 3, "#b91c1c", "разрушены даже бетонные здания"),
+    ("Радиация (500 бэр)", 0.72, 0.19, "#16a34a", "смертельная доза для 50–90% людей"),
+    ("Средняя ударная волна (5 psi)", 0.693, 1 / 3, "#6b7280", "рушатся жилые дома"),
+    ("Тепловое излучение", 0.627, 0.41, "#f97316", "ожоги 3-й степени на открытом месте"),
+    ("Слабая ударная волна (1 psi)", 1.906, 1 / 3, "#60a5fa", "выбиты окна, ранения стеклом"),
+]
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
-    const map = L.map('map', {
-      zoomSnap: 0.25,           // дробный зум — без рывков
-      zoomDelta: 0.5,
-      wheelPxPerZoomLevel: 120, // колесо мыши зумит мягче
-      inertiaDeceleration: 2000 // карта «доезжает» после перетаскивания
-    }).setView([51.1694, 71.4491], 5); // Астана
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-    }).addTo(map);
 
-    const markers = L.layerGroup().addTo(map);
-    const statusEl = document.getElementById('status');
-    const buttons = document.querySelectorAll('button.go[type=submit]');
-    const redIcon = L.divIcon({ className: '', html: '<div class="pin" style="width:18px;height:18px;background:#dc2626"></div>', iconSize: [18, 18] });
-    const blueIcon = L.divIcon({ className: '', html: '<div class="pin" style="width:14px;height:14px;background:#2563eb;animation:none"></div>', iconSize: [14, 14] });
+def smoothstep(t):
+    """Плавный старт и плавная остановка анимации."""
+    return t * t * (3 - 2 * t)
 
-    // Вкладки
-    document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab, .panel').forEach(el => el.classList.remove('active'));
-      tab.classList.add('active');
-      document.getElementById(tab.dataset.panel).classList.add('active');
-    }));
 
-    function escapeHtml(s) {
-      return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    }
+def circle_points(lat, lon, radius_km, n=64):
+    """Точки окружности радиусом radius_km вокруг (lat, lon)."""
+    dlat = radius_km / 111.32
+    dlon = radius_km / (111.32 * max(math.cos(math.radians(lat)), 0.01))
+    return [(lat + dlat * math.sin(2 * math.pi * i / n),
+             lon + dlon * math.cos(2 * math.pi * i / n)) for i in range(n)]
 
-    function setBusy(busy, text) {
-      buttons.forEach(b => b.disabled = busy);
-      statusEl.textContent = text;
-    }
 
-    async function nominatim(path) {
-      const res = await fetch('https://nominatim.openstreetmap.org/' + path + '&format=json&accept-language=ru');
-      if (!res.ok) throw new Error('Сервер вернул ' + res.status);
-      return res.json();
-    }
+def format_kt(kt):
+    return f"{kt / 1000:g} Мт" if kt >= 1000 else f"{kt:g} кт"
 
-    function addMarker(lat, lon, title, address, zoom) {
-      markers.eachLayer(m => m.setIcon(blueIcon));
-      const popup = '<b>' + escapeHtml(title) + '</b>' +
-        (address ? '<br><small>' + escapeHtml(address) + '</small>' : '') +
-        '<br><small>' + lat.toFixed(6) + ', ' + lon.toFixed(6) + '</small>';
-      const marker = L.marker([lat, lon], { icon: redIcon }).bindPopup(popup, { autoPan: false }).addTo(markers);
-      if (zoom) {
-        // Плавный перелёт: отдаление → полёт → приближение; попап открывается по прилёте
-        map.flyTo([lat, lon], zoom, { duration: 1.8, easeLinearity: 0.2 });
-        map.once('moveend', () => marker.openPopup());
-      } else {
-        map.panTo([lat, lon], { animate: true, duration: 0.6, easeLinearity: 0.2 });
-        marker.openPopup();
-      }
-      setBusy(false, address || title);
-    }
 
-    async function reverseAndMark(lat, lon, title, zoom) {
-      setBusy(true, 'Определяю адрес...');
-      let address = '';
-      try {
-        const data = await nominatim('reverse?lat=' + lat + '&lon=' + lon);
-        address = data.display_name || '';
-      } catch (e) { /* адрес не обязателен */ }
-      const name = title || (address ? address.split(',')[0] : lat + ', ' + lon);
-      addMarker(lat, lon, name, address, zoom);
-    }
+class CityMapApp:
+    def __init__(self, root):
+        self.root = root
+        root.title("Интерактивная карта: Город или Координаты")
+        root.geometry("1000x750")
 
-    // Поиск по городу
-    document.getElementById('p-city').addEventListener('submit', async e => {
-      e.preventDefault();
-      const city = document.getElementById('city').value.trim();
-      if (!city) { alert('Введите название города!'); return; }
-      setBusy(true, 'Ищу «' + city + '»...');
-      try {
-        const data = await nominatim('search?q=' + encodeURIComponent(city) + '&limit=1');
-        if (!data.length) { setBusy(false, ''); alert("Город '" + city + "' не найден."); return; }
-        const p = data[0];
-        addMarker(parseFloat(p.lat), parseFloat(p.lon), p.display_name.split(',')[0], p.display_name, 12);
-      } catch (err) {
-        setBusy(false, '');
-        alert('Не удалось получить данные:\n' + err.message);
-      }
-    });
+        self.geolocator = Nominatim(user_agent="city_map_app_tk_demo", timeout=10)
+        self.markers = []
+        self.busy = False
+        self.fly_job = None  # текущая анимация перелёта
+        self.zone_job = None  # текущая анимация зон
+        self.zone_polys = []
 
-    // Поиск по координатам
-    document.getElementById('p-coords').addEventListener('submit', e => {
-      e.preventDefault();
-      const latStr = document.getElementById('lat').value.trim().replace(',', '.');
-      const lonStr = document.getElementById('lon').value.trim().replace(',', '.');
-      if (!latStr || !lonStr) { alert('Заполните поля широты и долготы!'); return; }
-      const lat = Number(latStr), lon = Number(lonStr);
-      if (Number.isNaN(lat) || Number.isNaN(lon)) { alert('Широта и долгота должны быть числами!'); return; }
-      if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-        alert('Неверные координаты!\nШирота: от -90 до 90\nДолгота: от -180 до 180'); return;
-      }
-      reverseAndMark(lat, lon, document.getElementById('title').value.trim(), 14);
-    });
+        tabs = ttk.Notebook(root)
+        tabs.pack(fill="x", padx=10, pady=(10, 5))
 
-    // Клик по карте — метка
-    map.on('click', e => reverseAndMark(+e.latlng.lat.toFixed(6), +e.latlng.lng.toFixed(6), '', null));
+        # ===== Вкладка 1: город =====
+        tab_city = ttk.Frame(tabs, padding=8)
+        tabs.add(tab_city, text="🌍 Поиск по городу")
 
-    document.getElementById('clear').addEventListener('click', () => {
-      markers.clearLayers();
-      statusEl.textContent = 'Метки очищены';
-    });
+        ttk.Label(tab_city, text="Город:").pack(side="left")
+        self.input_city = ttk.Entry(tab_city, width=50)
+        self.input_city.pack(side="left", padx=5, fill="x", expand=True)
+        self.input_city.bind("<Return>", lambda e: self.search_by_city())
+        self.btn_city = ttk.Button(tab_city, text="Найти город", command=self.search_by_city)
+        self.btn_city.pack(side="left")
 
-    // ================= Бомба =================
-    const BOMBS = [
-      ['Little Boy — Хиросима, 1945', 15],
-      ['Fat Man — Нагасаки, 1945', 21],
-      ['W76 — боеголовка Trident', 100],
-      ['W87 — боеголовка Minuteman III', 300],
-      ['W88 — боеголовка Trident II', 475],
-      ['B83 — авиабомба США', 1200],
-      ['Castle Bravo — испытание США, 1954', 15000],
-      ['Царь-бомба — испытание СССР, 1961', 50000],
-    ];
+        # ===== Вкладка 2: координаты =====
+        tab_coords = ttk.Frame(tabs, padding=8)
+        tabs.add(tab_coords, text="📍 Координаты вручную")
 
-    // Зоны поражения (воздушный взрыв): радиус_км = k * мощность_кт ^ p.
-    // Приблизительные формулы подобия, откалиброваны по данным для Хиросимы.
-    const EFFECTS = [
-      { name: 'Огненный шар', k: 0.068, p: 0.4, color: '#facc15', fill: 0.6, desc: 'всё внутри испаряется' },
-      { name: 'Сильная ударная волна (20 psi)', k: 0.243, p: 1 / 3, color: '#b91c1c', fill: 0.3, desc: 'разрушены даже бетонные здания' },
-      { name: 'Радиация (500 бэр)', k: 0.72, p: 0.19, color: '#16a34a', fill: 0.25, desc: 'смертельная доза для 50–90% людей' },
-      { name: 'Средняя ударная волна (5 psi)', k: 0.693, p: 1 / 3, color: '#6b7280', fill: 0.25, desc: 'рушатся жилые дома' },
-      { name: 'Тепловое излучение', k: 0.627, p: 0.41, color: '#f97316', fill: 0.2, desc: 'ожоги 3-й степени на открытом месте' },
-      { name: 'Слабая ударная волна (1 psi)', k: 1.906, p: 1 / 3, color: '#60a5fa', fill: 0.15, desc: 'выбиты окна, ранения стеклом' },
-    ];
+        ttk.Label(tab_coords, text="Широта:").pack(side="left")
+        self.input_lat = ttk.Entry(tab_coords, width=12)
+        self.input_lat.pack(side="left", padx=(2, 8))
+        ttk.Label(tab_coords, text="Долгота:").pack(side="left")
+        self.input_lon = ttk.Entry(tab_coords, width=12)
+        self.input_lon.pack(side="left", padx=(2, 8))
+        ttk.Label(tab_coords, text="Название:").pack(side="left")
+        self.input_title = ttk.Entry(tab_coords, width=20)
+        self.input_title.pack(side="left", padx=(2, 8))
+        for entry in (self.input_lat, self.input_lon, self.input_title):
+            entry.bind("<Return>", lambda e: self.search_by_coords())
+        self.btn_coords = ttk.Button(tab_coords, text="Показать", command=self.search_by_coords)
+        self.btn_coords.pack(side="left")
 
-    const bombSelect = document.getElementById('bomb');
-    const ktInput = document.getElementById('kt');
-    const unitSelect = document.getElementById('unit');
-    const legendEl = document.getElementById('legend');
-    const flashEl = document.getElementById('flash');
-    const zones = L.layerGroup().addTo(map);
-    let zoneAnim = null, launchTimer = null;
+        # ===== Вкладка 3: бомба =====
+        tab_bomb = ttk.Frame(tabs, padding=8)
+        tabs.add(tab_bomb, text="☢️ Бомба")
 
-    BOMBS.forEach(([name, kt]) => bombSelect.add(new Option(name, kt)));
-    // Подставляет мощность бомбы в поле: от 1000 кт — в мегатоннах
-    function setYield(kt) {
-      const mt = kt >= 1000;
-      unitSelect.value = mt ? '1000' : '1';
-      ktInput.value = mt ? kt / 1000 : kt;
-    }
-    setYield(BOMBS[0][1]);
-    bombSelect.addEventListener('change', () => setYield(Number(bombSelect.value)));
+        ttk.Label(tab_bomb, text="Бомба:").pack(side="left")
+        self.bomb_choice = ttk.Combobox(tab_bomb, values=[name for name, _ in BOMBS],
+                                        state="readonly", width=36)
+        self.bomb_choice.current(0)
+        self.bomb_choice.pack(side="left", padx=(2, 8))
+        self.bomb_choice.bind("<<ComboboxSelected>>", self.on_bomb_selected)
+        ttk.Label(tab_bomb, text="Мощность:").pack(side="left")
+        self.input_kt = ttk.Entry(tab_bomb, width=10)
+        self.input_kt.pack(side="left", padx=(2, 2))
+        self.input_kt.bind("<Return>", lambda e: self.launch())
+        self.unit_choice = ttk.Combobox(tab_bomb, values=list(UNITS), state="readonly", width=4)
+        self.unit_choice.pack(side="left", padx=(0, 8))
+        self.set_yield(BOMBS[0][1])
+        ttk.Button(tab_bomb, text="🚀 Запуск", command=self.launch).pack(side="left")
+        ttk.Button(tab_bomb, text="Убрать зоны", command=self.clear_zones).pack(side="left", padx=(8, 0))
 
-    function fmtKt(kt) {
-      return kt >= 1000 ? (kt / 1000).toLocaleString('ru') + ' Мт' : kt.toLocaleString('ru') + ' кт';
-    }
+        # ===== Карта =====
+        self.map = tkintermapview.TkinterMapView(root, corner_radius=0)
+        self.map.pack(fill="both", expand=True, padx=10)
+        self.map.set_position(START_LAT, START_LON)
+        self.map.set_zoom(5)
+        # Правый клик по карте — поставить метку в этой точке
+        self.map.add_right_click_menu_command("Поставить метку здесь",
+                                              self.marker_from_click, pass_coords=True)
+        # Легенда зон поражения поверх карты (показывается после запуска)
+        self.legend = tk.Frame(self.map, bg="white", bd=1, relief="solid")
 
-    function clearZones() {
-      cancelAnimationFrame(zoneAnim);
-      clearTimeout(launchTimer);
-      zones.clearLayers();
-      legendEl.classList.remove('show');
-    }
+        # ===== Нижняя панель =====
+        bottom = ttk.Frame(root)
+        bottom.pack(fill="x", padx=10, pady=5)
+        self.status = ttk.Label(bottom, text="Готово. Правый клик по карте — поставить метку.")
+        self.status.pack(side="left")
+        ttk.Button(bottom, text="Очистить метки", command=self.clear_markers).pack(side="right")
 
-    function showLegend(kt, list) {
-      legendEl.innerHTML = '<b>☢️ ' + fmtKt(kt) + '</b>' +
-        list.slice().reverse().map(z =>
-          '<div class="row"><span class="sw" style="background:' + z.color + '"></span><div><b>' + z.name + '</b> — ' +
-          z.r.toFixed(2) + ' км (' + (Math.PI * z.r * z.r).toFixed(1) + ' км²)<br><small>' + z.desc + '</small></div></div>'
-        ).join('') +
-        '<small class="note">Приблизительная модель, воздушный взрыв.</small>';
-      legendEl.classList.add('show');
-    }
+    # ---------- Фоновые запросы ----------
+    def run_in_background(self, func, on_done, text):
+        if self.busy:
+            return
+        self.busy = True
+        self.btn_city.config(state="disabled")
+        self.btn_coords.config(state="disabled")
+        self.status.config(text=text)
 
-    function detonate(target, list, kt) {
-      flashEl.classList.add('on');
-      setTimeout(() => flashEl.classList.remove('on'), 120);
+        def worker():
+            try:
+                result, error = func(), None
+            except Exception as e:
+                result, error = None, str(e)
+            self.root.after(0, lambda: self.finish(on_done, result, error))
 
-      const circles = list.map(z => L.circle(target, {
-        radius: 1, color: z.color, weight: 2, fillColor: z.color, fillOpacity: z.fill
-      }).bindTooltip(z.name + ': ' + z.r.toFixed(2) + ' км', { sticky: true }).addTo(zones));
+        threading.Thread(target=worker, daemon=True).start()
 
-      const start = performance.now();
-      const step = now => {
-        const t = Math.min((now - start) / 1500, 1);
-        const e = 1 - Math.pow(1 - t, 3); // быстро в начале, плавно в конце — как ударная волна
-        circles.forEach((c, i) => c.setRadius(Math.max(list[i].r * 1000 * e, 1)));
-        if (t < 1) zoneAnim = requestAnimationFrame(step);
-      };
-      zoneAnim = requestAnimationFrame(step);
+    def finish(self, on_done, result, error):
+        self.busy = False
+        self.btn_city.config(state="normal")
+        self.btn_coords.config(state="normal")
+        self.status.config(text="Готово")
+        if error:
+            messagebox.showerror("Ошибка", f"Не удалось получить данные:\n{error}")
+        else:
+            on_done(result)
 
-      showLegend(kt, list);
-      statusEl.textContent = 'Взрыв ' + fmtKt(kt) + ' в точке ' + target.lat.toFixed(4) + ', ' + target.lng.toFixed(4);
-    }
+    # ---------- Город ----------
+    def search_by_city(self):
+        city = self.input_city.get().strip()
+        if not city:
+            messagebox.showwarning("Ошибка", "Введите название города!")
+            return
 
-    document.getElementById('p-bomb').addEventListener('submit', e => {
-      e.preventDefault();
-      const value = Number(ktInput.value.trim().replace(',', '.'));
-      if (!value) { alert('Мощность должна быть положительным числом!'); return; }
-      const kt = value * Number(unitSelect.value);
-      if (kt < 0.001 || kt > 100000) { alert('Мощность: от 0,001 кт до 100 Мт'); return; }
+        def on_done(location):
+            if not location:
+                messagebox.showwarning("Не найдено", f"Город '{city}' не найден.")
+                return
+            title = location.address.split(",")[0]
+            self.add_marker(location.latitude, location.longitude, title, location.address, 12)
 
-      // Цель — последняя метка, а если меток нет — центр карты
-      const last = markers.getLayers().at(-1);
-      const target = last ? last.getLatLng() : map.getCenter();
-      clearZones();
+        self.run_in_background(lambda: self.geolocator.geocode(city, language="ru"),
+                               on_done, f"Ищу «{city}»...")
 
-      const list = EFFECTS.map(z => ({ ...z, r: z.k * Math.pow(kt, z.p) }))
-                          .sort((a, b) => b.r - a.r); // от большой к малой, чтобы малые были сверху
-      map.flyToBounds(target.toBounds(list[0].r * 2000 * 1.15), { duration: 1.2 });
-      statusEl.textContent = 'Запуск...';
-      launchTimer = setTimeout(() => detonate(target, list, kt), 1300);
-    });
+    # ---------- Координаты ----------
+    def search_by_coords(self):
+        lat_str = self.input_lat.get().strip().replace(",", ".")
+        lon_str = self.input_lon.get().strip().replace(",", ".")
+        if not lat_str or not lon_str:
+            messagebox.showwarning("Ошибка", "Заполните поля широты и долготы!")
+            return
+        try:
+            lat, lon = float(lat_str), float(lon_str)
+        except ValueError:
+            messagebox.showwarning("Ошибка", "Широта и долгота должны быть числами!")
+            return
+        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            messagebox.showwarning("Ошибка",
+                                   "Неверные координаты!\nШирота: от -90 до 90\nДолгота: от -180 до 180")
+            return
+        title = self.input_title.get().strip() or f"{lat}, {lon}"
+        self.reverse_and_mark(lat, lon, title)
 
-    document.getElementById('clear-zones').addEventListener('click', () => {
-      clearZones();
-      statusEl.textContent = 'Зоны убраны';
-    });
-  </script>
-</body>
-</html>
+    def marker_from_click(self, coords):
+        lat, lon = coords
+        self.reverse_and_mark(round(lat, 6), round(lon, 6), None)
+
+    def reverse_and_mark(self, lat, lon, title):
+        def on_done(location):
+            address = location.address if location else ""
+            name = title or (address.split(",")[0] if address else f"{lat}, {lon}")
+            self.add_marker(lat, lon, name, address, 14 if title else None)
+
+        self.run_in_background(lambda: self.geolocator.reverse((lat, lon), language="ru"),
+                               on_done, "Определяю адрес...")
+
+    # ---------- Метки ----------
+    def add_marker(self, lat, lon, title, address, zoom):
+        for m in self.markers:  # предыдущие метки — синие
+            m.marker_color_circle, m.marker_color_outside = "#1e40af", "#3b82f6"
+            m.draw()
+        marker = self.map.set_marker(lat, lon, text=title,
+                                     command=lambda m, a=address: self.show_info(m, a))
+        self.markers.append(marker)
+        self.fly_to(lat, lon, zoom if zoom else self.map.zoom)
+        self.status.config(text=address or title)
+
+    # ---------- Плавный перелёт ----------
+    def fly_to(self, lat, lon, zoom):
+        if self.fly_job is not None:
+            self.root.after_cancel(self.fly_job)
+            self.fly_job = None
+
+        start_lat, start_lon = self.map.get_position()
+        start_zoom = self.map.zoom
+        # Чем дальше лететь, тем сильнее «отдаляемся» в середине пути
+        distance = math.hypot(lat - start_lat, lon - start_lon)
+        dip = min(max(math.log2(distance + 1) * 1.5, 0), 6)
+
+        def ease(t):  # плавный старт и плавная остановка
+            return t * t * (3 - 2 * t)
+
+        def step(frame):
+            t = ease(frame / FLY_FRAMES)
+            cur_zoom = start_zoom + (zoom - start_zoom) * t - dip * math.sin(math.pi * t)
+            self.map.set_zoom(max(cur_zoom, 2))
+            self.map.set_position(start_lat + (lat - start_lat) * t,
+                                  start_lon + (lon - start_lon) * t)
+            if frame < FLY_FRAMES:
+                self.fly_job = self.root.after(FLY_FRAME_MS, step, frame + 1)
+            else:
+                self.fly_job = None
+
+        step(1)
+
+    def show_info(self, marker, address):
+        messagebox.showinfo(marker.text, f"{address}\n\n{marker.position[0]:.6f}, {marker.position[1]:.6f}")
+
+    def clear_markers(self):
+        self.map.delete_all_marker()
+        self.markers.clear()
+        self.status.config(text="Метки очищены")
+
+    # ---------- Бомба ----------
+    def set_yield(self, kt):
+        """Подставляет мощность в поле: от 1000 кт — в мегатоннах."""
+        unit = "Мт" if kt >= 1000 else "кт"
+        self.unit_choice.set(unit)
+        self.input_kt.delete(0, "end")
+        self.input_kt.insert(0, f"{kt / UNITS[unit]:g}")
+
+    def on_bomb_selected(self, _event=None):
+        self.set_yield(BOMBS[self.bomb_choice.current()][1])
+
+    def launch(self):
+        try:
+            value = float(self.input_kt.get().strip().replace(",", "."))
+        except ValueError:
+            messagebox.showwarning("Ошибка", "Мощность должна быть числом!")
+            return
+        kt = value * UNITS[self.unit_choice.get()]
+        if not (0.001 <= kt <= 100000):
+            messagebox.showwarning("Ошибка", "Мощность: от 0,001 кт до 100 Мт")
+            return
+
+        if self.fly_job is not None:
+            self.root.after_cancel(self.fly_job)
+            self.fly_job = None
+        # Цель — последняя метка, а если меток нет — центр карты
+        lat, lon = self.markers[-1].position if self.markers else self.map.get_position()
+        self.clear_zones()
+
+        zones = sorted(((name, k * kt ** p, color, desc) for name, k, p, color, desc in EFFECTS),
+                       key=lambda z: -z[1])  # от большой к малой, чтобы малые были сверху
+        r = zones[0][1] * 1.15
+        dlat = r / 111.32
+        dlon = r / (111.32 * max(math.cos(math.radians(lat)), 0.01))
+        self.map.fit_bounding_box((min(lat + dlat, 85), max(lon - dlon, -180)),
+                                  (max(lat - dlat, -85), min(lon + dlon, 180)))
+
+        self.flash()
+        self.show_legend(kt, zones)
+        self.status.config(text=f"Взрыв {format_kt(kt)} в точке {lat:.4f}, {lon:.4f}")
+        self.animate_zones(lat, lon, zones, 1)
+
+    def flash(self):
+        overlay = tk.Frame(self.map, bg="white")
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.root.after(120, overlay.destroy)
+
+    def animate_zones(self, lat, lon, zones, frame):
+        for poly in self.zone_polys:
+            poly.delete()
+        self.zone_polys = []
+        t = smoothstep(frame / ZONE_FRAMES)
+        for name, radius, color, _ in zones:
+            poly = self.map.set_polygon(circle_points(lat, lon, max(radius * t, 0.001)),
+                                        fill_color=color if name == FIREBALL else "",
+                                        outline_color=color, border_width=3)
+            self.zone_polys.append(poly)
+        if frame < ZONE_FRAMES:
+            self.zone_job = self.root.after(30, self.animate_zones, lat, lon, zones, frame + 1)
+        else:
+            self.zone_job = None
+
+    def show_legend(self, kt, zones):
+        for widget in self.legend.winfo_children():
+            widget.destroy()
+        tk.Label(self.legend, text=f"☢️ {format_kt(kt)}", bg="white",
+                 font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 2))
+        for i, (name, radius, color, desc) in enumerate(sorted(zones, key=lambda z: z[1]), start=1):
+            tk.Label(self.legend, bg=color, width=2).grid(row=i, column=0, padx=(6, 4), pady=1)
+            tk.Label(self.legend, bg="white", anchor="w",
+                     text=f"{name}: {radius:.2f} км ({math.pi * radius ** 2:.1f} км²) — {desc}"
+                     ).grid(row=i, column=1, sticky="w", padx=(0, 6))
+        tk.Label(self.legend, bg="white", fg="gray40", anchor="w",
+                 text="Приблизительная модель, воздушный взрыв").grid(
+            row=len(zones) + 1, column=0, columnspan=2, sticky="w", padx=6, pady=(2, 4))
+        self.legend.place(relx=0.01, rely=0.98, anchor="sw")
+
+    def clear_zones(self):
+        if self.zone_job is not None:
+            self.root.after_cancel(self.zone_job)
+            self.zone_job = None
+        for poly in self.zone_polys:
+            poly.delete()
+        self.zone_polys = []
+        self.legend.place_forget()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    CityMapApp(root)
+    root.mainloop()
